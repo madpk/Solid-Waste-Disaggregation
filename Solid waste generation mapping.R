@@ -4,7 +4,8 @@
 # GitHub: https://github.com/madpk
 # ------------------------------------------------------------------------------
 # Set Working Directory
-wd<-setwd("C:/Users/madhu/OneDrive/Desktop/WD")
+wd<-setwd("C:/Users/madhu/OneDrive/Documents/GitHub/-Solid-Waste-Disaggregation/Datasets")
+
 
 # Load Required Libraries
 library(tidyverse)    # Data manipulation and ggplot2
@@ -20,11 +21,11 @@ library(corrplot)     # Correlation matrix visualization
 # Vector & Raster Analyses
 # ------------------------------------------------------------------------------
 
-# Load Kerala LSGI Multipolygon
-kerala_lsgi_basic <- st_read("kerala_lsgi_basic_2.geojson")
+# Load Kerala admin Multipolygon
+kerala_admin <- st_read("Kerala_admin_multipolygon.geojson")
 
 # Reproject to UTM Zone 43N (EPSG:32643)
-kerala_lsgi_basic <- st_transform(kerala_lsgi_basic, crs = 32643)
+kerala_admin <- st_transform(kerala_admin, crs = 32643)
 
 # List all .tif raster files in the working directory
 raster_files <- list.files(wd, pattern = "\\.tif$", full.names = TRUE)
@@ -58,33 +59,33 @@ raster_names <- c("building_fractional_count_100m_2023",
 # Assign names to raster layers
 names(raster_items) <- raster_names
 
-# Define the extraction function (sum of raster values within each LSGI)
-extract_raster_sum <- function(raster, lsgi_vect) {
-  exact_extract(raster, lsgi_vect, 'sum')
+# Define the extraction function (sum of raster values within each admin)
+extract_raster_sum <- function(raster, admin_vect) {
+  exact_extract(raster, admin_vect, 'sum')
 }
 
 # Apply the extraction function to each raster in the list
-lsgi_data_sum <- map(raster_items, ~extract_raster_sum(.x, kerala_lsgi_basic))
+admin_data_sum <- map(raster_items, ~extract_raster_sum(.x, kerala_admin))
 
 # Assign descriptive names to the extracted data
-names(lsgi_data_sum) <- c("builtcount_sum",
+names(admin_data_sum) <- c("builtcount_sum",
                           "builtvolnres_sum",
                           "builtvolres_sum",
                           "popdens_sum")
 
 # Combine extracted values with original spatial data
-lsgi_data_sum_comb <- bind_cols(as.data.frame(lsgi_data_sum), kerala_lsgi_basic)
+admin_data_sum_comb <- bind_cols(as.data.frame(admin_data_sum), kerala_admin)
 
 # Optional: Save the combined GeoPackage
-# st_write(lsgi_data_sum_comb, "kerala_lsgi_data_v2.gpkg")
+# st_write(admin_data_sum_comb, "kerala_admin_data_v2.gpkg")
 
 # Create a Machine Learning-ready dataframe (remove geometry, retain only values)
-lsgi_data_summl <- lsgi_data_sum_comb %>%
+admin_data_summl <- admin_data_sum_comb %>%
   st_drop_geometry() %>%
   select(builtcount_sum, builtvolnres_sum, builtvolres_sum, popdens_sum, SW_Ton)
 
 # Preview the final ML-ready dataframe
-glimpse(lsgi_data_summl)
+glimpse(admin_data_summl)
 
 
 # ------------------------------------------------------------------------------
@@ -93,8 +94,8 @@ glimpse(lsgi_data_summl)
 
 # Prepare PCA Data
 
-# Combine ML features with LSGI labels
-pca_data <- data.frame(lsgi_data_summl, LSGI = factor(lsgi_data_sum_comb$LSGI))
+# Combine ML features with admin labels
+pca_data <- data.frame(admin_data_summl, admin = factor(admin_data_sum_comb$LSGI))
 
 # Rename columns for clarity in visualizations
 colnames(pca_data) <- c("Building count",
@@ -102,7 +103,7 @@ colnames(pca_data) <- c("Building count",
                         "RESBU volume",
                         "Population density",
                         "Solid waste generation",
-                        "LSGI")
+                        "admin")
 
 # Run PCA
 
@@ -111,7 +112,7 @@ pca_result <- PCA(pca_data[1:5], graph = FALSE)  # Only numeric variables
 
 # PCA Biplot
 fviz_pca_biplot(pca_result,
-                col.ind = pca_data$LSGI,    
+                col.ind = pca_data$admin,    
                 palette = "lancet",         
                 shape.ind = 16,             
                 pointshape = 16,
@@ -121,7 +122,7 @@ fviz_pca_biplot(pca_result,
                 repel = TRUE,             
                 label = "var",             
                 mean.point = FALSE,
-                legend.title = "LSGI")
+                legend.title = "admin")
 
 
 # Spearman Correlation
@@ -143,7 +144,7 @@ corrplot(spearman_corr,
 h2o.init()
 
 # Load the AutoML model used in the study
-aml <- h2o.loadModel("V3_DeepLearning_grid_3_AutoML_13_20250315_154642_model_2") 
+aml <- h2o.loadModel("V3_DeepLearning_grid_3") 
 
 
 # View the model's parameters
@@ -190,8 +191,8 @@ ggplot(var_imp, aes(x = reorder(variable, percentage), y = percentage)) +
 #  Creating Disaggregated Raster Layer (Dasymetric mapping)
 # ------------------------------------------------------------------------------
 
-# Convert the polygon to 'terra' format and split into individual LSGIs
-multipolygon <- vect(kerala_lsgi_basic)
+# Convert the polygon to 'terra' format and split into individual admins
+multipolygon <- vect(kerala_admin)
 multipolygon_list <- split(multipolygon, seq(nrow(multipolygon)))
 
 # Convert raster stack into a list
@@ -232,13 +233,13 @@ weighted_rasters <- map(cropped_normalized_rasters, function(raster_list) {
 })
 
 
-# Sum weighted rasters to create composite raster for each LSGI
+# Sum weighted rasters to create composite raster for each admin
 sum_rasters <- map(weighted_rasters, function(raster_list) {
   rast(raster_list) %>% app(sum, na.rm = TRUE)
 })
 
 
-# Scale raster so that each LSGI raster sums to 1 (i.e., total weight = 1)
+# Scale raster so that each admin raster sums to 1 (i.e., total weight = 1)
 scale_to_sum_one <- function(raster) {
   total_sum <- sum(values(raster), na.rm = TRUE)
   raster / total_sum
@@ -248,12 +249,12 @@ scaled_rasters <- map(sum_rasters, scale_to_sum_one)
 
 
 # Disaggregate solid waste (SW_Ton) into the raster cells using scaled weights
-disaggregated_waste_rasters <- map2(kerala_lsgi_basic$SW_Ton, scaled_rasters, 
+disaggregated_waste_rasters <- map2(kerala_admin$SW_Ton, scaled_rasters, 
                                     function(total_waste, raster) {
   raster * total_waste
 })
 
-# Combine all LSGI rasters into a single raster layer
+# Combine all admin rasters into a single raster layer
 raster_collection <- sprc(disaggregated_waste_rasters)
 merged_raster <- merge(raster_collection)
 plot(merged_raster)
