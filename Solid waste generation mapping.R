@@ -1,0 +1,279 @@
+# ------------------------------------------------------------------------------
+# Automated Machine Learning-Based Spatial Disaggregation Framework
+# Author: Madhuraj Palat Kannakai
+# GitHub: https://github.com/madpk
+# ------------------------------------------------------------------------------
+# Set Working Directory
+wd<-setwd("C:/Users/madhu/OneDrive/Desktop/WD")
+
+# Load Required Libraries
+library(tidyverse)    # Data manipulation and ggplot2
+library(sf)           # Spatial data handling
+library(terra)        # Raster and spatial data processing
+library(exactextractr)# Efficient raster extraction
+library(h2o)          # Automated Machine Learning
+library(FactoMineR)   # Principal Component Analysis
+library(factoextra)   # PCA Visualization
+library(corrplot)     # Correlation matrix visualization
+
+# ------------------------------------------------------------------------------
+# Vector & Raster Analyses
+# ------------------------------------------------------------------------------
+
+# Load Kerala LSGI Multipolygon
+kerala_lsgi_basic <- st_read("kerala_lsgi_basic_2.geojson")
+
+# Reproject to UTM Zone 43N (EPSG:32643)
+kerala_lsgi_basic <- st_transform(kerala_lsgi_basic, crs = 32643)
+
+# List all .tif raster files in the working directory
+raster_files <- list.files(wd, pattern = "\\.tif$", full.names = TRUE)
+
+# Load all rasters as SpatRaster objects using terra::rast()
+rasters <- lapply(raster_files, rast)
+
+# Set the first raster as the reference for resampling and extent alignment
+reference_raster <- rasters[[1]]
+
+# Resample rasters 2 and 3 to match the reference raster's resolution and extent
+rasters[[2]] <- resample(rasters[[2]], reference_raster, method = "bilinear")
+rasters[[3]] <- resample(rasters[[3]], reference_raster, method = "bilinear")
+
+# Define common extent from the reference raster
+common_extent <- ext(reference_raster)
+
+# Align all rasters to the common extent
+aligned_rasters <- lapply(rasters, function(r) extend(r, common_extent))
+
+# Stack all aligned & convert to a list
+raster_aligned <- rast(aligned_rasters) 
+raster_items<-as.list(raster_aligned)
+
+# Create a vector containing the names of raster layers
+raster_names <- c("building_fractional_count_100m_2023",
+                  "built_volume_nonresidential_100m_2020",
+                  "built_volume_residential_100m_2020",
+                  "Population_Dens_2020_Kerala_100m")
+
+# Assign names to raster layers
+names(raster_items) <- raster_names
+
+# Define the extraction function (sum of raster values within each LSGI)
+extract_raster_sum <- function(raster, lsgi_vect) {
+  exact_extract(raster, lsgi_vect, 'sum')
+}
+
+# Apply the extraction function to each raster in the list
+lsgi_data_sum <- map(raster_items, ~extract_raster_sum(.x, kerala_lsgi_basic))
+
+# Assign descriptive names to the extracted data
+names(lsgi_data_sum) <- c("builtcount_sum",
+                          "builtvolnres_sum",
+                          "builtvolres_sum",
+                          "popdens_sum")
+
+# Combine extracted values with original spatial data
+lsgi_data_sum_comb <- bind_cols(as.data.frame(lsgi_data_sum), kerala_lsgi_basic)
+
+# Optional: Save the combined GeoPackage
+# st_write(lsgi_data_sum_comb, "kerala_lsgi_data_v2.gpkg")
+
+# Create a Machine Learning-ready dataframe (remove geometry, retain only values)
+lsgi_data_summl <- lsgi_data_sum_comb %>%
+  st_drop_geometry() %>%
+  select(builtcount_sum, builtvolnres_sum, builtvolres_sum, popdens_sum, SW_Ton)
+
+# Preview the final ML-ready dataframe
+glimpse(lsgi_data_summl)
+
+
+# ------------------------------------------------------------------------------
+# Exploratory data analysis (Correlation& PCA)
+# ------------------------------------------------------------------------------
+
+# Prepare PCA Data
+
+# Combine ML features with LSGI labels
+pca_data <- data.frame(lsgi_data_summl, LSGI = factor(lsgi_data_sum_comb$LSGI))
+
+# Rename columns for clarity in visualizations
+colnames(pca_data) <- c("Building count",
+                        "NRESBU volume",
+                        "RESBU volume",
+                        "Population density",
+                        "Solid waste generation",
+                        "LSGI")
+
+# Run PCA
+
+
+pca_result <- PCA(pca_data[1:5], graph = FALSE)  # Only numeric variables
+
+# PCA Biplot
+fviz_pca_biplot(pca_result,
+                col.ind = pca_data$LSGI,    
+                palette = "lancet",         
+                shape.ind = 16,             
+                pointshape = 16,
+                pointsize = 4,
+                alpha.ind = 0.8,
+                addEllipses = FALSE,        
+                repel = TRUE,             
+                label = "var",             
+                mean.point = FALSE,
+                legend.title = "LSGI")
+
+
+# Spearman Correlation
+
+
+# Compute Spearman correlation matrix
+spearman_corr <- cor(pca_data[, 1:5], method = "spearman")
+
+# Display correlation matrix with numbers
+corrplot(spearman_corr,
+         method = "number",
+         number.cex = 0.8)
+
+# ------------------------------------------------------------------------------
+# AutoML
+# ------------------------------------------------------------------------------
+
+# Initialize H2O cluster (skip if already initialized)
+h2o.init()
+
+# Load the AutoML model used in the study
+aml <- h2o.loadModel("V3_DeepLearning_grid_3_AutoML_13_20250315_154642_model_2") 
+
+
+# View the model's parameters
+aml_model_params <- aml@parameters
+
+# Get variable importance (only for models that support it, like XGBoost, GBM)
+var_imp <- h2o.varimp(aml )
+
+
+# Create the variable importance data frame
+var_imp <- data.frame(
+  variable = c("Building Count", "Population Density", "RESBU Volume", 
+               "NRESBU Volume"),
+  percentage = c(0.335697, 0.261192, 0.275932, 0.127179) * 100  # Convert to %
+)
+
+# Plot the variable importance
+ggplot(var_imp, aes(x = reorder(variable, percentage), y = percentage)) +
+  geom_bar(stat = "identity", fill = "#69b3a2", color = "black", width = 0.6) +
+  coord_flip() +
+  labs(
+    x = "Variable",
+    y = "Importance (%)",
+    title = "Relative Variable Importance"
+  ) +
+  geom_text(
+    aes(label = sprintf("%.1f%%", percentage)),
+    hjust = -0.2,
+    size = 5,
+    fontface = "bold"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14, face = "bold"),
+    panel.grid.major.y = element_blank(),  # Optional: cleaner look
+    panel.grid.minor = element_blank()
+  ) +
+  ylim(0, max(var_imp$percentage) + 10)  # Add space for labels above bars
+
+
+# ------------------------------------------------------------------------------
+#  Creating Disaggregated Raster Layer (Dasymetric mapping)
+# ------------------------------------------------------------------------------
+
+# Convert the polygon to 'terra' format and split into individual LSGIs
+multipolygon <- vect(kerala_lsgi_basic)
+multipolygon_list <- split(multipolygon, seq(nrow(multipolygon)))
+
+# Convert raster stack into a list
+stacked_rasters <- as.list(raster_items)
+
+# Function to crop and mask raster with a polygon
+crop_rast <- function(input_raster, multipolygon) {
+  cropped <- terra::crop(input_raster, multipolygon)
+  masked <- terra::mask(cropped, multipolygon)
+}
+
+
+# Function to normalize raster using min-max scaling
+normalize_raster <- function(raster_layer) {
+  min_val <- global(raster_layer, "min", na.rm = TRUE)[1, 1]
+  max_val <- global(raster_layer, "max", na.rm = TRUE)[1, 1]
+  (raster_layer - min_val) / (max_val - min_val)
+}
+
+# Crop, mask, and normalize all raster layers for each polygon
+cropped_normalized_rasters <- map(multipolygon_list, function(polygon) {
+  map(stacked_rasters, ~ {
+    cropped <- crop_rast(.x, polygon)
+    normalize_raster(cropped)
+  })
+})
+
+
+
+# Define variable weights based on variable importance (must match order)
+weights <- c(0.335697, 0.127179, 0.275932, 0.261192)
+
+# Apply weights to each normalized raster layer
+weighted_rasters <- map(cropped_normalized_rasters, function(raster_list) {
+  map2(raster_list, weights, function(raster, weight) {
+    raster * weight
+  })
+})
+
+
+# Sum weighted rasters to create composite raster for each LSGI
+sum_rasters <- map(weighted_rasters, function(raster_list) {
+  rast(raster_list) %>% app(sum, na.rm = TRUE)
+})
+
+
+# Scale raster so that each LSGI raster sums to 1 (i.e., total weight = 1)
+scale_to_sum_one <- function(raster) {
+  total_sum <- sum(values(raster), na.rm = TRUE)
+  raster / total_sum
+}
+
+scaled_rasters <- map(sum_rasters, scale_to_sum_one)
+
+
+# Disaggregate solid waste (SW_Ton) into the raster cells using scaled weights
+disaggregated_waste_rasters <- map2(kerala_lsgi_basic$SW_Ton, scaled_rasters, 
+                                    function(total_waste, raster) {
+  raster * total_waste
+})
+
+# Combine all LSGI rasters into a single raster layer
+raster_collection <- sprc(disaggregated_waste_rasters)
+merged_raster <- merge(raster_collection)
+plot(merged_raster)
+# Save the disaggregated waste raster (scaled to kg for final output)
+writeRaster(merged_raster * 1000, "SW_raster_Final.tif", overwrite = TRUE)
+
+
+# -------------------- END OF SCRIPT -------------------------------------------
+# Solid Waste Disaggregation Raster Workflow Completed ✅
+# Author: Madhuraj Palat Kannakai
+# GitHub: https://github.com/madpk
+
+
+
+
+
+
+
+
+
+
+
+
