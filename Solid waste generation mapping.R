@@ -31,33 +31,7 @@ kerala_admin <- st_transform(kerala_admin, crs = 32643)
 raster_files <- list.files(wd, pattern = "\\.tif$", full.names = TRUE)
 
 # Load all rasters as SpatRaster objects using terra::rast()
-rasters <- lapply(raster_files, rast)
-
-# Set the first raster as the reference for resampling and extent alignment
-reference_raster <- rasters[[1]]
-
-# Resample rasters 2 and 3 to match the reference raster's resolution and extent
-rasters[[2]] <- resample(rasters[[2]], reference_raster, method = "bilinear")
-rasters[[3]] <- resample(rasters[[3]], reference_raster, method = "bilinear")
-
-# Define common extent from the reference raster
-common_extent <- ext(reference_raster)
-
-# Align all rasters to the common extent
-aligned_rasters <- lapply(rasters, function(r) extend(r, common_extent))
-
-# Stack all aligned & convert to a list
-raster_aligned <- rast(aligned_rasters) 
-raster_items<-as.list(raster_aligned)
-
-# Create a vector containing the names of raster layers
-raster_names <- c("building_fractional_count_100m_2023",
-                  "built_volume_nonresidential_100m_2020",
-                  "built_volume_residential_100m_2020",
-                  "Population_Dens_2020_Kerala_100m")
-
-# Assign names to raster layers
-names(raster_items) <- raster_names
+raster_items <- lapply(raster_files, rast)
 
 # Define the extraction function (sum of raster values within each admin)
 extract_raster_sum <- function(raster, admin_vect) {
