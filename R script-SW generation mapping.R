@@ -114,15 +114,29 @@ corrplot(spearman_corr,
 # AutoML
 # ------------------------------------------------------------------------------
 
-# Initialize H2O cluster (skip if already initialized)
+# Initialize H2O
 h2o.init()
 
-# Load the AutoML model used in the study
+# Convert data frame to H2O object
+admin_data_summl_h20 <- as.h2o(admin_data_summl)
+
+# Split data: 70% training, 30% testing
+splits <- h2o.splitFrame(admin_data_summl_h20, ratios = 0.7, seed = 1234)
+train <- splits[[1]]
+test <- splits[[2]]
+
+# Load Pre-Trained AutoML Model (DeepLearning_grid_3_AutoML_13_20250315_154642_model_2)
 aml <- h2o.loadModel("V3_DeepLearning_grid_3") 
 
 
 # View the model's parameters
 aml_model_params <- aml@parameters
+
+#Performance on train & test data
+test_performance <- h2o.performance(aml, newdata = test)
+r2_train <- h2o.r2(aml)
+r2_test <- h2o.r2(test_performance)
+
 
 # Get variable importance (only for models that support it, like XGBoost, GBM)
 var_imp <- h2o.varimp(aml )
@@ -233,7 +247,7 @@ raster_collection <- sprc(disaggregated_waste_rasters)
 merged_raster <- merge(raster_collection)
 plot(merged_raster)
 # Save the disaggregated waste raster (scaled to kg for final output)
-writeRaster(merged_raster * 1000, "SW_raster_Final.tif", overwrite = TRUE)
+#writeRaster(merged_raster * 1000, "SW_raster_Final.tif", overwrite = TRUE)
 
 
 # -------------------- END OF SCRIPT -------------------------------------------
